@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#8d5a2b">
+<title>Red Trapiche</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;font-family:system-ui,sans-serif;background:#faf6f0;color:#2b2118}
+header{display:flex;justify-content:space-between;align-items:center;padding:12px 16px;background:#8d5a2b;color:#fff;position:sticky;top:0;z-index:5}
+header small{display:block;opacity:.85;font-size:12px}
+header button{background:none;border:1px solid #fff8;color:#fff;border-radius:8px;padding:4px 10px}
+main{padding:12px 12px 90px;max-width:640px;margin:auto}
+nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#fff;border-top:1px solid #ddd}
+nav button{flex:1;padding:14px;border:0;background:none;font-size:15px}
+nav button.on{color:#8d5a2b;font-weight:700;border-top:3px solid #8d5a2b}
+.card{background:#fff;border-radius:12px;padding:12px;margin:8px 0;box-shadow:0 1px 3px #0002}
+.card h3{margin:0 0 4px;font-size:17px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.chip{border:2px solid #ccc;background:#fff;border-radius:20px;padding:6px 12px;font-size:14px}
+.dot{display:inline-block;width:12px;height:12px;border-radius:50%;margin-right:6px;vertical-align:middle}
+select,input{width:100%;padding:10px;margin:4px 0;border:1px solid #ccc;border-radius:8px;font-size:16px;font-family:inherit}
+input[type=checkbox]{width:auto}
+.btn{background:#8d5a2b;color:#fff;border:0;border-radius:10px;padding:12px 16px;font-size:16px;width:100%;margin-top:8px}
+.btn.g{background:#999}
+.a{display:inline-block;padding:8px 12px;border-radius:8px;background:#eee;text-decoration:none;color:#222;font-size:14px}
+.a.wa{background:#25d366;color:#fff}
+.warn{background:#ffe8b3;text-align:center;padding:6px;font-size:13px}
+.err{color:#b00020}
+.empty{text-align:center;color:#777;margin-top:32px}
+dialog{border:0;border-radius:14px;width:min(92vw,420px)}
+.fab{position:fixed;right:16px;bottom:72px;width:56px;height:56px;border-radius:50%;border:0;background:#8d5a2b;color:#fff;font-size:28px;box-shadow:0 2px 6px #0004}
+.pad{padding:24px;max-width:460px;margin:auto}
+</style>
+<!-- SDK de Firebase (versión de compatibilidad, scripts tradicionales) -->
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.1/firebase-auth-compat.js"></script>
+</head>
+<body>
+<div id="app"></div>
+<script>
+/* Configuración de tu proyecto red-trapiche */
+const firebaseConfig = {
+  apiKey: "AIzaSyD2Qb5KFo8rCYypoG7SXSY5aqvLYzqRMuQ",
+  authDomain: "red-trapiche.firebaseapp.com",
+  projectId: "red-trapiche",
+  storageBucket: "red-trapiche.firebasestorage.app",
+  messagingSenderId: "297890179554",
+  appId: "1:297890179554:web:f378815bf64852d5a9f1bb",
+  measurementId: "G-6PS7RVZ6ZK"
+};
+
+const MUNI = ['Suaita','Gámbita','Chitaraque','Santana'];
+const OFI = ['Relimpiador o templador','Hornillero','Bagacero','Prensero','Sillero','Colinche cuadro','Colinche pastilla','Colinche pulverizada','Cortero','Alzador','Cargador','Cocinera','Conductor de tractor','Conductor de volqueta'];
+// Normaliza un oficio escrito a mano: sin espacios de más, primera letra en mayúscula,
+// y si coincide con uno de la lista usa el nombre oficial (así los filtros lo encuentran)
+const canon = s => { const n = String(s).trim().replace(/\s+/g, ' '); if (!n) return '';
+  const c = n[0].toUpperCase() + n.slice(1); return OFI.find(x => x.toLowerCase() === c.toLowerCase()) || c; };
+const EST = {aprontando:['Aprontando','#f5b301'], moliendo:['Moliendo','#2e9e4f'], inactivo:['Inactivo','#d33']};
+
+const $ = s => document.querySelector(s);
+const app = $('#app');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const opts = (arr, sel, label = x => x) => arr.map(o => `<option value="${esc(o)}" ${o === sel ? 'selected' : ''}>${esc(label(o))}</option>`).join('');
+const contact = t => `<a class="a" href="tel:${esc(t)}">📞 Llamar</a> <a class="a wa" href="https://wa.me/57${esc(t)}" target="_blank" rel="noopener">WhatsApp</a>`;
+
+/* ---------- Estado ---------- */
+let db, auth, uid;
+let me = null, obr = null;            // users/{uid} y obreros/{uid}
+let loaded = false, meCache = true, profKey = null, obrSub = null;
+let unsubList = () => {}, listCache = false;
+const S = {tab: null, muni: '', est: '', ofi: '', disp: true, force: false};
+const w = p => p.catch(e => console.error(e)); // escrituras: nunca bloquean la UI
+const stamp = () => firebase.firestore.FieldValue.serverTimestamp();
+
+/* ---------- Pantallas de arranque ---------- */
+function loading(msg = 'Cargando…', extra = '') {
+  app.innerHTML = `<div class="pad"><h1>🌾 Red Trapiche</h1><p>${esc(msg)}</p>${extra}</div>`;
+}
+
+function showError(err) {
+  const msg = err?.code || err?.message || String(err);
+  const hint = /network|unavailable|descargar/i.test(msg) ? 'Necesitas conexión la primera vez que abres la app.' :
+    /operation-not-allowed|admin-restricted/i.test(msg) ? 'Habilita el método Anónimo en Authentication → Método de acceso.' :
+    /unauthorized-domain/i.test(msg) ? 'Agrega este dominio en Authentication → Configuración → Dominios autorizados.' :
+    /permission-denied/i.test(msg) ? 'Revisa que las reglas de Firestore estén publicadas.' : '';
+  loading('No se pudo conectar con Firebase.',
+    `<p class="err">${esc(msg)}</p><p>${esc(hint)}</p><button class="btn" onclick="location.reload()">Reintentar</button>`);
+}
+
+/* ---------- Arranque: Firebase compat + persistencia offline (IndexedDB) ---------- */
+async function boot() {
+  loading('Conectando…');
+  try {
+    if (typeof firebase === 'undefined')
+      throw new Error('No se pudo descargar Firebase (gstatic.com). Revisa tu conexión.');
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+    db.settings({cacheSizeBytes: firebase.firestore.CACHE_SIZE_UNLIMITED});
+    try { await db.enablePersistence({synchronizeTabs: true}); }
+    catch (e) { console.warn('Persistencia offline no disponible:', e.code); }
+    auth = firebase.auth();
+    // La sesión anónima se guarda en el dispositivo y se reutiliza sin red
+    const u = await new Promise((res, rej) => { const un = auth.onAuthStateChanged(x => { un(); res(x); }, rej); });
+    uid = (u || (await auth.signInAnonymously()).user).uid;
+  } catch (err) { return showError(err); }
+  startProfile();
+}
+
+/* ---------- Perfil en tiempo real ---------- */
+function startProfile() {
+  db.collection('users').doc(uid).onSnapshot({includeMetadataChanges: true}, s => {
+    me = s.exists ? s.data() : null; meCache = s.metadata.fromCache; loaded = true;
+    if (me?.role === 'obrero' && !obrSub) {
+      obrSub = db.collection('obreros').doc(uid).onSnapshot(o => {
+        obr = o.exists ? o.data() : null;
+        if (S.tab === 'perfil') render();
+      });
+    } else if (me?.role !== 'obrero' && obrSub) { obrSub(); obrSub = null; obr = null; }
+    const key = me ? me.role + me.nombre : 'none' + meCache + S.force;
+    if (key !== profKey) { profKey = key; route(); }
+  }, showError);
+}
+
+function route() {
+  unsubList(); unsubList = () => {};
+  if (!loaded) return loading();
+  if (!me) {
+    if (meCache && !S.force) return loading('Sin señal: verificando tu cuenta…',
+      '<button class="btn g" data-act="force">Continuar sin conexión</button>');
+    return setup();
+  }
+  render();
+}
+
+function setup() {
+  app.innerHTML = `<div class="pad"><h1>🌾 Red Trapiche</h1><p>Hoya del Río Suárez</p>
+  <form id="fs"><input name="nombre" placeholder="Tu nombre" required>
+  <input name="tel" type="tel" inputmode="numeric" pattern="[0-9]{10}" placeholder="Celular (10 dígitos)" required>
+  <select name="role"><option value="patron">Soy patrón (dueño de molino)</option><option value="obrero">Soy obrero panelero</option></select>
+  <button class="btn">Continuar</button></form></div>`;
+}
+
+/* ---------- Tarjetas ---------- */
+const molinoCard = (d, own) => { const e = EST[d.estado] || EST.inactivo; return `<div class="card">
+  <h3><span class="dot" style="background:${e[1]}"></span>${esc(d.nombre)}</h3>
+  <div>${esc(d.municipio)} · ${esc(d.vereda)}</div>
+  ${d.referencia ? `<div>📍 ${esc(d.referencia)}</div>` : ''}
+  ${own ? `<div class="row" style="margin-top:8px">${Object.entries(EST).map(([k, [l, c]]) =>
+      `<button class="chip" data-act="est" data-id="${d.id}" data-v="${k}" style="${d.estado === k ? `background:${c};border-color:${c};color:#fff` : ''}">${l}</button>`).join('')}
+    <button class="chip" data-act="del" data-id="${d.id}">🗑</button></div>`
+  : `<div style="margin:4px 0">Patrón: ${esc(d.patron)} · <b style="color:${e[1]}">${e[0]}</b></div>${contact(d.telefono)}`}
+</div>`; };
+
+const obreroCard = d => `<div class="card">
+  <h3><span class="dot" style="background:${d.disponible ? '#2e9e4f' : '#999'}"></span>${esc(d.nombre)}</h3>
+  <div>${d.disponible ? 'Disponible' : 'Ocupado'} · ${esc((d.oficios || []).join(', ') || 'Sin oficios')}</div>
+  <div style="margin-top:6px">${contact(d.telefono)}</div></div>`;
+
+/* ---------- Consultas en tiempo real ---------- */
+function live(col, filters, cardFn, empty) {
+  let q = db.collection(col);
+  filters.forEach(([f, op, v]) => { q = q.where(f, op, v); });
+  unsubList = q.limit(40).onSnapshot({includeMetadataChanges: true}, s => {
+    listCache = s.metadata.fromCache; banner();
+    const items = s.docs.map(d => ({id: d.id, ...d.data({serverTimestamps: 'estimate'})}))
+      .sort((a, b) => (a.nombre || '').localeCompare(b.nombre || ''));
+    $('#list').innerHTML = items.length ? items.map(cardFn).join('') : `<p class="empty">${empty}</p>`;
+  }, err => { $('#list').innerHTML = `<p class="empty err">${esc(err.code || err.message)}</p>`; });
+}
+
+function banner() {
+  const b = $('#banner'); if (!b) return;
+  b.innerHTML = (!navigator.onLine || listCache) ? '<div class="warn">Sin señal: mostrando datos guardados</div>' : '';
+}
+addEventListener('online', banner); addEventListener('offline', banner);
+
+/* ---------- Vista principal ---------- */
+function render() {
+  unsubList(); unsubList = () => {};
+  const tabs = me.role === 'patron' ? [['mios', 'Mis molinos'], ['obr', 'Obreros']] : [['perfil', 'Mi perfil'], ['mol', 'Molinos']];
+  if (!tabs.some(t => t[0] === S.tab)) S.tab = tabs[0][0];
+  const t = S.tab;
+  let filt = '';
+  if (t === 'obr') filt = `<select data-f="ofi"><option value="">Oficio: todos</option>${opts(OFI, S.ofi)}</select>
+    <input data-f="ofi" maxlength="40" placeholder="…o escribe otro oficio y presiona Enter" value="${OFI.includes(S.ofi) ? '' : esc(S.ofi)}">
+    <label><input type="checkbox" data-f="disp" ${S.disp ? 'checked' : ''}> Solo disponibles</label>`;
+  if (t === 'mol') filt = `<div class="row"><select data-f="muni" style="flex:1"><option value="">Municipio: todos</option>${opts(MUNI, S.muni)}</select>
+    <select data-f="est" style="flex:1"><option value="">Estado: todos</option>${opts(Object.keys(EST), S.est, k => EST[k][0])}</select></div>`;
+  app.innerHTML = `<header><div><b>🌾 Red Trapiche</b><small>${esc(me.nombre)} · ${me.role === 'patron' ? 'Patrón' : 'Obrero'}</small></div>
+    <button data-act="reset">Cambiar rol</button></header>
+  <div id="banner"></div>
+  <main>${filt}<div id="list"></div></main>
+  ${t === 'mios' ? '<button class="fab" data-act="new">+</button>' : ''}
+  <nav>${tabs.map(([k, l]) => `<button data-act="tab" data-v="${k}" class="${k === t ? 'on' : ''}">${l}</button>`).join('')}</nav>
+  <dialog id="dlg"><form id="fm"><h3>Nuevo molino</h3>
+    <input name="nombre" placeholder="Nombre del trapiche" required>
+    <select name="municipio">${opts(MUNI)}</select>
+    <input name="vereda" placeholder="Vereda" required>
+    <input name="referencia" placeholder="Referencia (ej. cerca a la escuela)">
+    <button class="btn">Guardar</button><button type="button" class="btn g" data-act="close">Cancelar</button></form></dialog>`;
+  banner();
+
+  if (t === 'mios') live('molinos', [['ownerId', '==', uid]], d => molinoCard(d, true), 'Aún no tienes molinos. Toca + para agregar.');
+  if (t === 'obr') live('obreros', [...(S.ofi ? [['oficios', 'array-contains', S.ofi]] : []), ...(S.disp ? [['disponible', '==', true]] : [])], obreroCard, 'No hay obreros con ese filtro');
+  if (t === 'mol') live('molinos', [...(S.muni ? [['municipio', '==', S.muni]] : []), ...(S.est ? [['estado', '==', S.est]] : [])], d => molinoCard(d, false), 'No hay molinos con ese filtro');
+  if (t === 'perfil') {
+    const o = obr || {oficios: [], disponible: true};
+    $('#list').innerHTML = `<div class="card"><h3>${esc(me.nombre)}</h3><div>📞 ${esc(me.telefono)}</div>
+    <label style="display:block;margin:12px 0"><input type="checkbox" data-act="disp" ${o.disponible ? 'checked' : ''}> <b>${o.disponible ? 'Disponible' : 'Ocupado'}</b></label>
+    <b>Mis oficios</b><div class="row" style="margin-top:6px">${[...OFI, ...o.oficios.filter(x => !OFI.includes(x))].map(x => `<button class="chip" data-act="ofi" data-v="${esc(x)}" style="${o.oficios.includes(x) ? 'background:#8d5a2b;border-color:#8d5a2b;color:#fff' : ''}">${esc(x)}${OFI.includes(x) ? '' : ' ✕'}</button>`).join('')}</div>
+    <form id="fo" class="row" style="margin-top:12px;flex-wrap:nowrap"><input name="otro" maxlength="40" placeholder="¿Otro oficio? Escríbelo aquí" style="margin:0" required>
+    <button class="chip" style="white-space:nowrap;background:#8d5a2b;border-color:#8d5a2b;color:#fff">Agregar</button></form></div>`;
+  }
+}
+
+/* ---------- Eventos (todas las escrituras van a Firestore) ---------- */
+const setObrero = data => w(db.collection('obreros').doc(uid).set({...data, updatedAt: stamp()}, {merge: true}));
+
+app.addEventListener('click', e => {
+  const b = e.target.closest('[data-act]'); if (!b) return;
+  const {act, id, v} = b.dataset;
+  if (act === 'tab') { S.tab = v; render(); }
+  else if (act === 'est') w(db.collection('molinos').doc(id).update({estado: v, updatedAt: stamp()}));
+  else if (act === 'del') { if (confirm('¿Eliminar este molino?')) w(db.collection('molinos').doc(id).delete()); }
+  else if (act === 'new') $('#dlg').showModal();
+  else if (act === 'close') $('#dlg').close();
+  else if (act === 'ofi') {
+    const cur = obr?.oficios || [], n = cur.includes(v) ? cur.filter(x => x !== v) : [...cur, v];
+    setObrero({oficios: n});
+  }
+  else if (act === 'reset') {
+    if (!confirm('Se borrará tu perfil para elegir de nuevo. Tus molinos no se borran. ¿Continuar?')) return;
+    const bt = db.batch();
+    bt.delete(db.collection('users').doc(uid)); bt.delete(db.collection('obreros').doc(uid));
+    S.tab = null; S.force = true; w(bt.commit());
+  }
+  else if (act === 'force') { S.force = true; profKey = null; route(); }
+});
+
+app.addEventListener('change', e => {
+  const t = e.target;
+  if (t.dataset.f) { S[t.dataset.f] = t.type === 'checkbox' ? t.checked : (t.dataset.f === 'ofi' ? canon(t.value) : t.value); render(); }
+  if (t.dataset.act === 'disp') setObrero({disponible: t.checked});
+});
+
+app.addEventListener('submit', e => {
+  e.preventDefault();
+  const f = Object.fromEntries(new FormData(e.target));
+  if (e.target.id === 'fs') {
+    const nombre = f.nombre.trim(), bt = db.batch();
+    bt.set(db.collection('users').doc(uid), {role: f.role, nombre, telefono: f.tel, updatedAt: stamp()});
+    if (f.role === 'obrero') bt.set(db.collection('obreros').doc(uid), {nombre, telefono: f.tel, oficios: [], disponible: true, updatedAt: stamp()});
+    S.force = false; w(bt.commit());
+  }
+  if (e.target.id === 'fo') {
+    const n = canon(f.otro), cur = obr?.oficios || [];
+    if (n && !cur.includes(n)) setObrero({oficios: [...cur, n]});
+    e.target.reset();
+  }
+  if (e.target.id === 'fm') {
+    w(db.collection('molinos').add({
+      ownerId: uid, patron: me.nombre, telefono: me.telefono, nombre: f.nombre.trim(),
+      municipio: f.municipio, vereda: f.vereda.trim(), referencia: f.referencia.trim(),
+      estado: 'inactivo', updatedAt: stamp()}));
+    $('#dlg').close();
+  }
+});
+
+/* ---------- Inicio ---------- */
+boot();
+</script>
+</body>
+</html>
