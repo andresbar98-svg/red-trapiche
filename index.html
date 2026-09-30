@@ -53,7 +53,11 @@ const firebaseConfig = {
 };
 
 const MUNI = ['Suaita','Gámbita','Chitaraque','Santana'];
-const OFI = ['Prensero','Hornero','Molinero','Metedor/Sacador','Cortador/Aprontador'];
+const OFI = ['Relimpiador o templador','Hornillero','Bagacero','Prensero','Sillero','Colinche cuadro','Colinche pastilla','Colinche pulverizada','Cortero','Alzador','Cargador','Cocinera','Conductor de tractor','Conductor de volqueta'];
+// Normaliza un oficio escrito a mano: sin espacios de más, primera letra en mayúscula,
+// y si coincide con uno de la lista usa el nombre oficial (así los filtros lo encuentran)
+const canon = s => { const n = String(s).trim().replace(/\s+/g, ' '); if (!n) return '';
+  const c = n[0].toUpperCase() + n.slice(1); return OFI.find(x => x.toLowerCase() === c.toLowerCase()) || c; };
 const EST = {aprontando:['Aprontando','#f5b301'], moliendo:['Moliendo','#2e9e4f'], inactivo:['Inactivo','#d33']};
 
 const $ = s => document.querySelector(s);
@@ -181,6 +185,7 @@ function render() {
   const t = S.tab;
   let filt = '';
   if (t === 'obr') filt = `<select data-f="ofi"><option value="">Oficio: todos</option>${opts(OFI, S.ofi)}</select>
+    <input data-f="ofi" maxlength="40" placeholder="…o escribe otro oficio y presiona Enter" value="${OFI.includes(S.ofi) ? '' : esc(S.ofi)}">
     <label><input type="checkbox" data-f="disp" ${S.disp ? 'checked' : ''}> Solo disponibles</label>`;
   if (t === 'mol') filt = `<div class="row"><select data-f="muni" style="flex:1"><option value="">Municipio: todos</option>${opts(MUNI, S.muni)}</select>
     <select data-f="est" style="flex:1"><option value="">Estado: todos</option>${opts(Object.keys(EST), S.est, k => EST[k][0])}</select></div>`;
@@ -205,7 +210,9 @@ function render() {
     const o = obr || {oficios: [], disponible: true};
     $('#list').innerHTML = `<div class="card"><h3>${esc(me.nombre)}</h3><div>📞 ${esc(me.telefono)}</div>
     <label style="display:block;margin:12px 0"><input type="checkbox" data-act="disp" ${o.disponible ? 'checked' : ''}> <b>${o.disponible ? 'Disponible' : 'Ocupado'}</b></label>
-    <b>Mis oficios</b><div class="row" style="margin-top:6px">${OFI.map(x => `<button class="chip" data-act="ofi" data-v="${esc(x)}" style="${o.oficios.includes(x) ? 'background:#8d5a2b;border-color:#8d5a2b;color:#fff' : ''}">${esc(x)}</button>`).join('')}</div></div>`;
+    <b>Mis oficios</b><div class="row" style="margin-top:6px">${[...OFI, ...o.oficios.filter(x => !OFI.includes(x))].map(x => `<button class="chip" data-act="ofi" data-v="${esc(x)}" style="${o.oficios.includes(x) ? 'background:#8d5a2b;border-color:#8d5a2b;color:#fff' : ''}">${esc(x)}${OFI.includes(x) ? '' : ' ✕'}</button>`).join('')}</div>
+    <form id="fo" class="row" style="margin-top:12px;flex-wrap:nowrap"><input name="otro" maxlength="40" placeholder="¿Otro oficio? Escríbelo aquí" style="margin:0" required>
+    <button class="chip" style="white-space:nowrap;background:#8d5a2b;border-color:#8d5a2b;color:#fff">Agregar</button></form></div>`;
   }
 }
 
@@ -235,7 +242,7 @@ app.addEventListener('click', e => {
 
 app.addEventListener('change', e => {
   const t = e.target;
-  if (t.dataset.f) { S[t.dataset.f] = t.type === 'checkbox' ? t.checked : t.value; render(); }
+  if (t.dataset.f) { S[t.dataset.f] = t.type === 'checkbox' ? t.checked : (t.dataset.f === 'ofi' ? canon(t.value) : t.value); render(); }
   if (t.dataset.act === 'disp') setObrero({disponible: t.checked});
 });
 
@@ -247,6 +254,11 @@ app.addEventListener('submit', e => {
     bt.set(db.collection('users').doc(uid), {role: f.role, nombre, telefono: f.tel, updatedAt: stamp()});
     if (f.role === 'obrero') bt.set(db.collection('obreros').doc(uid), {nombre, telefono: f.tel, oficios: [], disponible: true, updatedAt: stamp()});
     S.force = false; w(bt.commit());
+  }
+  if (e.target.id === 'fo') {
+    const n = canon(f.otro), cur = obr?.oficios || [];
+    if (n && !cur.includes(n)) setObrero({oficios: [...cur, n]});
+    e.target.reset();
   }
   if (e.target.id === 'fm') {
     w(db.collection('molinos').add({
